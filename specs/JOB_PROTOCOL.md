@@ -11,6 +11,15 @@ between a SpecGraph/SpecPM control plane and a local SpecNode.
 - Make output schema validation mandatory.
 - Leave room for signed receipts and Agent Passport identity.
 
+## Field Conventions
+
+- Provider implementations use `kind` for the provider family, such as
+  `ollama`, `lmstudio`, `llama.cpp`, or `openai-compatible`.
+- Duration limits use milliseconds in protocol fields.
+- Repository commits use full commit digests, not abbreviated SHAs.
+- Artifact hashes use `digest` or `artifact_digest` fields formatted as
+  `sha256:<64 lowercase hex characters>`.
+
 ## Node Pairing
 
 Pairing starts in the web service and completes from the local node.
@@ -35,7 +44,7 @@ The node registers its capabilities:
   },
   "providers": [
     {
-      "type": "ollama",
+      "kind": "ollama",
       "base_url_kind": "localhost",
       "models": ["qwen3:4b", "llama3.2:3b"]
     }
@@ -51,7 +60,7 @@ The node registers its capabilities:
   "limits": {
     "max_concurrent_jobs": 1,
     "max_repo_size_mb": 500,
-    "max_job_duration_seconds": 900
+    "max_job_duration_ms": 900000
   }
 }
 ```
@@ -67,7 +76,7 @@ The node registers its capabilities:
   "repo": {
     "source": "remote",
     "url": "https://github.com/org/project",
-    "commit": "8f3a1c"
+    "commit": "8f3a1c0d2e4f67890123456789abcdef01234567"
   },
   "input": {
     "files": [
@@ -91,7 +100,21 @@ The node registers its capabilities:
     "required": ["intent", "capabilities", "confidence"],
     "properties": {
       "intent": { "type": "string" },
-      "capabilities": { "type": "array" },
+      "capabilities": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": ["name", "confidence", "evidence"],
+          "properties": {
+            "name": { "type": "string" },
+            "confidence": { "type": "number" },
+            "evidence": {
+              "type": "array",
+              "items": { "type": "string" }
+            }
+          }
+        }
+      },
       "confidence": { "type": "number" }
     }
   }
@@ -119,8 +142,10 @@ The node registers its capabilities:
     }
   },
   "usage": {
-    "provider": "ollama",
-    "model": "qwen3:4b",
+    "provider": {
+      "kind": "ollama",
+      "model": "qwen3:4b"
+    },
     "input_tokens": 8421,
     "output_tokens": 612,
     "duration_ms": 18422,
@@ -128,9 +153,9 @@ The node registers its capabilities:
   },
   "receipt": {
     "node_id": "node_01H00000000000000000000000",
-    "repo_commit": "8f3a1c",
+    "repo_commit": "8f3a1c0d2e4f67890123456789abcdef01234567",
     "job_type": "specgraph.extract_module_intent",
-    "artifact_sha256": "sha256:example"
+    "artifact_digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444"
   }
 }
 ```

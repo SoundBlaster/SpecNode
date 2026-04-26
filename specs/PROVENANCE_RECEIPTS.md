@@ -3,6 +3,9 @@
 SpecNode artifacts should be auditable even when the first MVP does not yet
 implement cryptographic signing.
 
+Digest fields use the canonical string form
+`sha256:<64 lowercase hex characters>`.
+
 ## Artifact Set
 
 A complete local run should be able to produce:
@@ -24,8 +27,8 @@ A complete local run should be able to produce:
   },
   "source": {
     "repo": "https://github.com/org/project",
-    "commit": "8f3a1c",
-    "tree_hash": "sha256:example"
+    "commit": "8f3a1c0d2e4f67890123456789abcdef01234567",
+    "tree_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
   },
   "provider": {
     "kind": "ollama",
@@ -33,13 +36,13 @@ A complete local run should be able to produce:
   },
   "job": {
     "type": "specpm.build_package_manifest",
-    "policy_hash": "sha256:example",
-    "prompt_set_hash": "sha256:example"
+    "policy_hash": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+    "prompt_set_hash": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
   },
   "artifacts": [
     {
       "path": "spec-package.yaml",
-      "sha256": "example"
+      "digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444"
     }
   ],
   "generated_at": "2026-04-26T00:00:00Z"
@@ -52,13 +55,15 @@ A complete local run should be able to produce:
 {
   "job_id": "job_01H00000000000000000000000",
   "node_id": "node_01H00000000000000000000000",
-  "provider": "ollama",
-  "model": "qwen3:4b",
+  "provider": {
+    "kind": "ollama",
+    "model": "qwen3:4b"
+  },
   "input_tokens": 8421,
   "output_tokens": 612,
   "duration_ms": 18422,
   "cache_hit": false,
-  "artifact_sha256": "sha256:example",
+  "artifact_digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
   "created_at": "2026-04-26T00:00:00Z"
 }
 ```
