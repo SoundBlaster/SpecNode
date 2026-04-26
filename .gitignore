@@ -1,0 +1,33 @@
+.DS_Store
+
+# Environment and local configuration
+.env
+.env.*
+!.env.example
+
+# Local runtime state
+.specnode/
+runs/
+.worktrees/
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+htmlcov/
+.coverage
+
+# Node.js
+node_modules/
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+
+# Build artifacts
+build/
+dist/
+target/
+coverage/
