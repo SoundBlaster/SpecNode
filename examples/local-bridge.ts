@@ -4,6 +4,8 @@ import { WebSocket } from "ws";
 import {
   createNodeHello,
   type AgentAdapter,
+  type AgentRunContext,
+  type ApprovalRequest,
   type AuditSink,
   type BridgeRuntimeOptions,
   type Envelope,
@@ -14,7 +16,8 @@ import {
   type WorkspaceDescriptor,
 } from "../src/index.js";
 
-const SERVER_URL = process.env.SPECNODE_SERVER_URL ?? "ws://localhost:8787/bridge/connect?token=dev";
+const SERVER_URL = process.env.SPECNODE_SERVER_URL ?? "ws://localhost:8787/bridge/connect";
+const DEV_BRIDGE_TOKEN = process.env.SPECNODE_DEV_TOKEN ?? "dev";
 const NODE_ID = process.env.SPECNODE_NODE_ID ?? `node_${randomUUID()}`;
 const WORKSPACE_ID = process.env.SPECNODE_WORKSPACE_ID ?? "current";
 const WORKSPACE_NAME = process.env.SPECNODE_WORKSPACE_NAME ?? process.cwd().split(/[\\/]/).at(-1) ?? "current";
@@ -38,7 +41,11 @@ const runtime: BridgeRuntimeOptions = {
 connect();
 
 function connect(): void {
-  const socket = new WebSocket(SERVER_URL);
+  const socket = new WebSocket(SERVER_URL, {
+    headers: {
+      Authorization: `Bearer ${DEV_BRIDGE_TOKEN}`,
+    },
+  });
 
   socket.on("open", () => {
     console.log(`Connected to ${SERVER_URL}`);
@@ -48,6 +55,11 @@ function connect(): void {
   socket.on("message", async (data) => {
     try {
       const message = parseEnvelope(data.toString());
+
+      if (message.type === "node.accepted") {
+        console.log("Control plane accepted node handshake.");
+        return;
+      }
 
       if (message.type === "session.start") {
         await handleSessionStart(socket, message.payload as SessionStartPayload);
@@ -88,6 +100,35 @@ async function handleSessionStart(socket: WebSocket, payload: SessionStartPayloa
     return;
   }
 
+  if (sessionDecision.approvalRequired) {
+    const approval = createApprovalRequest(payload.sessionId, {
+      risk: "high",
+      operation: {
+        kind: "session.start",
+        policy: payload.policy,
+      },
+      reason: sessionDecision.reason ?? "Local policy requires approval before starting this session.",
+    });
+
+    await emit(socket, payload.sessionId, { type: "approval.required", ...approval });
+    const approved = await requestLocalApproval(approval);
+    await emit(socket, payload.sessionId, {
+      type: "approval.resolved",
+      sessionId: payload.sessionId,
+      approvalId: approval.approvalId,
+      approved,
+    });
+
+    if (!approved) {
+      await emit(socket, payload.sessionId, {
+        type: "session.rejected",
+        sessionId: payload.sessionId,
+        reason: "Local user rejected the preflight session approval.",
+      });
+      return;
+    }
+  }
+
   const adapter = runtime.agents.find((candidate) => candidate.descriptor.id === payload.agentId);
 
   if (!adapter) {
@@ -99,10 +140,15 @@ async function handleSessionStart(socket: WebSocket, payload: SessionStartPayloa
     return;
   }
 
-  await adapter.start(payload, async (event) => {
-    await runtime.audit.record(event);
-    await emit(socket, payload.sessionId, event);
-  });
+  const context: AgentRunContext = {
+    emit: async (event) => {
+      await runtime.audit.record(event);
+      await emit(socket, payload.sessionId, event);
+    },
+    evaluateOperation: async (operation) => runtime.policy.evaluateOperation(operation),
+  };
+
+  await adapter.start(payload, context);
 }
 
 async function emit(socket: WebSocket, sessionId: string, event: RunEvent): Promise<void> {
@@ -147,61 +193,74 @@ class DemoAgentAdapter implements AgentAdapter {
 
   private readonly cancelledSessions = new Set<string>();
 
-  async start(payload: SessionStartPayload, emitEvent: (event: RunEvent) => Promise<void>): Promise<void> {
+  async start(payload: SessionStartPayload, context: AgentRunContext): Promise<void> {
     this.cancelledSessions.delete(payload.sessionId);
 
-    await emitEvent({ type: "session.started", sessionId: payload.sessionId });
+    await context.emit({ type: "session.started", sessionId: payload.sessionId });
     await delay(250);
 
     if (this.cancelledSessions.has(payload.sessionId)) {
-      await emitEvent({ type: "session.cancelled", sessionId: payload.sessionId, reason: "cancelled_before_start" });
+      await context.emit({ type: "session.cancelled", sessionId: payload.sessionId, reason: "cancelled_before_start" });
       return;
     }
 
-    await emitEvent({
+    await context.emit({
       type: "text.delta",
+      sessionId: payload.sessionId,
       text: `Accepted ${payload.task.kind} for workspace ${payload.workspaceId}. Goal: ${payload.task.goal}`,
     });
 
     await delay(250);
 
-    if (payload.policy.shell === "ask") {
-      const approvalId = randomUUID();
-      await emitEvent({
-        type: "approval.required",
-        request: {
-          approvalId,
-          risk: "medium",
-          operation: {
-            kind: "shell.run",
-            command: "npm test",
-          },
-          reason: "A real bridge would ask locally before allowing the agent to run tests.",
-        },
+    const shellOperation = {
+      kind: "shell.run",
+      command: "npm test",
+    };
+    const shellDecision = await context.evaluateOperation(shellOperation);
+
+    if (shellDecision.approvalRequired || !shellDecision.allowed) {
+      const approval = createApprovalRequest(payload.sessionId, {
+        risk: "medium",
+        operation: shellOperation,
+        reason: shellDecision.reason ?? "The selected agent wants to run tests.",
       });
 
+      await context.emit({ type: "approval.required", ...approval });
       await delay(250);
-      await emitEvent({ type: "approval.resolved", approvalId, approved: false });
-      await emitEvent({
-        type: "text.delta",
-        text: "Demo bridge denied shell execution and continued with a no-side-effects plan.",
+
+      const approved = await requestLocalApproval(approval);
+      await context.emit({
+        type: "approval.resolved",
+        sessionId: payload.sessionId,
+        approvalId: approval.approvalId,
+        approved,
       });
+
+      if (!approved) {
+        await context.emit({
+          type: "text.delta",
+          sessionId: payload.sessionId,
+          text: "Demo bridge denied shell execution through PolicyEngine and continued with a no-side-effects plan.",
+        });
+      }
     }
 
     await delay(250);
 
-    await emitEvent({
+    await context.emit({
       type: "artifact.produced",
+      sessionId: payload.sessionId,
       name: "demo-plan.json",
       sha256: fakeSha(payload.sessionId),
     });
 
-    await emitEvent({
+    await context.emit({
       type: "text.delta",
+      sessionId: payload.sessionId,
       text: "Next implementation step: replace DemoAgentAdapter with a Codex CLI, Claude Code, ACP, or custom-command adapter.",
     });
 
-    await emitEvent({ type: "session.completed", sessionId: payload.sessionId });
+    await context.emit({ type: "session.completed", sessionId: payload.sessionId });
   }
 
   async cancel(sessionId: string): Promise<void> {
@@ -245,8 +304,30 @@ class LocalPolicyEngine implements PolicyEngine {
 
 class ConsoleAuditSink implements AuditSink {
   async record(event: RunEvent): Promise<void> {
-    console.log(`[audit] ${event.type}`, JSON.stringify(event));
+    console.log(`[audit][${event.sessionId}] ${event.type}`, JSON.stringify(event));
   }
+}
+
+function createApprovalRequest(
+  sessionId: string,
+  input: Omit<ApprovalRequest, "sessionId" | "approvalId">,
+): ApprovalRequest {
+  return {
+    sessionId,
+    approvalId: randomUUID(),
+    ...input,
+  };
+}
+
+async function requestLocalApproval(request: ApprovalRequest): Promise<boolean> {
+  console.log(
+    `[approval][${request.sessionId}] ${request.reason} ` +
+      `operation=${JSON.stringify(request.operation)} risk=${request.risk}`,
+  );
+
+  // MVP demo policy: print the local approval request, deny it, and continue with
+  // no side effects. A real bridge should show a local OS/UI prompt here.
+  return false;
 }
 
 function fakeSha(input: string): string {
