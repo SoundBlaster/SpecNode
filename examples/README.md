@@ -13,6 +13,11 @@ The browser never talks to `localhost` bridge APIs. It only talks to the control
 plane. The bridge connects outbound to the server and enforces local policy before
 running a local agent adapter.
 
+This is a localhost demo only. Do not copy the control-plane server into
+production without real application authentication, per-user bridge ownership
+checks, CSRF protection, rate limits, durable audit storage, and encrypted device
+tokens.
+
 ## Install
 
 ```bash
@@ -42,19 +47,25 @@ http://localhost:8787
 Click **Start session**. You should see:
 
 1. The bridge reports `node.hello`.
-2. The browser starts a typed session through the server.
-3. The bridge accepts the session.
-4. The demo adapter emits progress events.
-5. The bridge emits a local approval request for shell execution.
-6. The demo bridge denies shell execution and completes with a no-side-effects artifact.
+2. The control plane responds with `node.accepted`.
+3. The browser starts a typed session through the server.
+4. The bridge accepts the session.
+5. The demo adapter emits progress events.
+6. The bridge emits a local approval request for shell execution.
+7. The demo bridge denies shell execution and completes with a no-side-effects artifact.
 
 ## Environment
 
 ```bash
 PORT=8787 npm run dev:server
-SPECNODE_SERVER_URL="ws://localhost:8787/bridge/connect?token=dev" npm run dev:bridge
+SPECNODE_SERVER_URL="ws://localhost:8787/bridge/connect" npm run dev:bridge
+SPECNODE_DEV_TOKEN="dev" npm run dev:bridge
 SPECNODE_WORKSPACE_NAME="MyProject" npm run dev:bridge
 ```
+
+`SPECNODE_DEV_TOKEN` is passed by the bridge as an `Authorization: Bearer ...`
+header. The demo intentionally avoids token-in-query auth so URLs can be logged
+without leaking device tokens.
 
 ## What This Does Not Do Yet
 
