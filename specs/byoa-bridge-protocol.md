@@ -24,6 +24,17 @@ plane.
 specnode -> wss://<control-plane>/specnode/connect
 ```
 
+SpecNode authenticates the outbound connection with an `Authorization` header.
+Device tokens should not be passed in query strings because URLs commonly appear
+in server, proxy, and observability logs.
+
+```http
+GET /specnode/connect HTTP/1.1
+Host: control-plane.example
+Authorization: Bearer <device-token>
+Upgrade: websocket
+```
+
 All messages are JSON objects with:
 
 ```ts
@@ -70,6 +81,18 @@ SpecNode sends `node.hello` immediately after connection.
 
 The control plane responds with `node.accepted` or closes the connection.
 
+```json
+{
+  "id": "msg_accepted",
+  "type": "node.accepted",
+  "timestamp": "2026-06-24T00:00:00.100Z",
+  "payload": {
+    "nodeId": "node_123",
+    "serverTime": "2026-06-24T00:00:00.100Z"
+  }
+}
+```
+
 ## Session Start
 
 The control plane sends `session.start`.
@@ -110,6 +133,10 @@ SpecNode must reject the session if:
 
 SpecNode emits `session.event` messages.
 
+`payload.sessionId` is the routing key for the control plane. The nested event
+also carries `sessionId` so audit sinks, logs, and replay tools can process events
+without needing the outer transport envelope.
+
 ```json
 {
   "id": "msg_3",
@@ -119,6 +146,7 @@ SpecNode emits `session.event` messages.
     "sessionId": "sess_123",
     "event": {
       "type": "text.delta",
+      "sessionId": "sess_123",
       "text": "I will inspect the repository state first."
     }
   }
@@ -145,6 +173,7 @@ SpecNode may require local approval before executing risky operations.
 ```json
 {
   "type": "approval.required",
+  "sessionId": "sess_123",
   "approvalId": "appr_123",
   "risk": "high",
   "operation": {
@@ -157,6 +186,15 @@ SpecNode may require local approval before executing risky operations.
 
 The approval must be resolved locally. The server may display approval state, but
 high-risk approvals should not rely only on browser-side confirmation.
+
+```json
+{
+  "type": "approval.resolved",
+  "sessionId": "sess_123",
+  "approvalId": "appr_123",
+  "approved": false
+}
+```
 
 ## Cancellation
 
