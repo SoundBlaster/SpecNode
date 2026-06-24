@@ -2,14 +2,36 @@
 
 SpecNode is the personal compute adapter for SpecGraph and SpecPM.
 
+## Layers
+
+SpecNode is organized in three layers. Keep them separated; dependencies only
+ever point downward.
+
+- **Protocol / SDK** — the stable wire contract: message types, the envelope
+  codec, the handshake/capability helpers, and the runtime interfaces
+  (`PolicyEngine`, `AgentAdapter`, `AuditSink`, `ApprovalResolver`). This is the
+  package entry point. It depends on nothing in the other layers.
+- **Bridge runtime** — the reusable local execution authority: outbound transport
+  and reconnection, session orchestration, local approval, revoke/reconnect,
+  audit, and default policy. It depends only on the protocol/SDK layer and
+  contains no demo-specific code.
+- **Demo** — runnable examples that wire the bridge to a concrete agent and a
+  stand-in control plane. It may depend on the SDK and bridge layers; those two
+  layers must never depend on the demo. A demo must not hold reusable bridge
+  logic — extract such logic into the bridge runtime.
+
 ## Repository Rules
 
 - Merge into `main` only through a pull request.
-- Prefer specification-first changes until the first MVP runtime slice is chosen.
+- Keep protocol and security contracts specification-first; land runtime code
+  together with the spec and docs it changes.
 - Preserve stable terminology: `SpecNode`, `SpecGraph`, `SpecPM`, `Agent Passport`, `job protocol`, `usage receipt`, `provenance`.
 - Keep proposals under `docs/proposals`.
 - Keep stable protocol and security contracts under `specs`.
-- Runtime code, once introduced, belongs under `src`.
+- Protocol/SDK code belongs under `src`, with the public surface in `src/index.ts`.
+- Bridge runtime code belongs under `src/bridge`.
+- Runnable demos and examples belong under `examples`, and must not contain
+  reusable bridge logic.
 - Tool-related code belongs under `tools`.
 - Test-related code belongs under `tests`.
 - Generated local runtime artifacts are not tracked by default, including `.specnode/`, `runs/`, and `.worktrees/`.
@@ -27,6 +49,7 @@ SpecNode is the personal compute adapter for SpecGraph and SpecPM.
 
 ## Validation Expectations
 
+- Run `npm run typecheck` and `npm test` before opening a PR that touches `src`, `examples`, or `tests`.
 - Documentation changes should pass `git diff --check`.
 - Protocol examples should be valid JSON or YAML when possible.
 - Runtime changes should add focused tests for the behavior being introduced.
