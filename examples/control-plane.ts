@@ -280,13 +280,15 @@ function pageHtml(): string {
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>SpecNode BYOA Bridge Demo</title>
   <style>
-    body { font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 32px; max-width: 960px; }
+    :root { color-scheme: light dark; }
+    body { font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 32px; max-width: 960px; background: Canvas; color: CanvasText; }
     label { display: block; margin: 12px 0 6px; font-weight: 600; }
-    input, textarea, select, button { font: inherit; padding: 8px; }
+    input, textarea, select, button { font: inherit; padding: 8px; background: Field; color: FieldText; border: 1px solid GrayText; }
+    button { background: ButtonFace; color: ButtonText; border: 1px solid GrayText; cursor: pointer; }
     textarea { width: 100%; min-height: 96px; }
     pre { background: #111; color: #eee; padding: 16px; overflow: auto; border-radius: 8px; }
     .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
-    .pill { border: 1px solid #ccc; border-radius: 999px; padding: 4px 10px; }
+    .pill { border: 1px solid GrayText; border-radius: 999px; padding: 4px 10px; color: CanvasText; }
   </style>
 </head>
 <body>
