@@ -30,6 +30,11 @@ export interface NodeHelloPayload {
   readonly workspaces: readonly WorkspaceDescriptor[];
 }
 
+export interface NodeAcceptedPayload {
+  readonly nodeId: string;
+  readonly serverTime: string;
+}
+
 export interface SessionTask {
   readonly kind: string;
   readonly goal: string;
@@ -45,6 +50,7 @@ export interface SessionStartPayload {
 }
 
 export interface ApprovalRequest {
+  readonly sessionId: string;
   readonly approvalId: string;
   readonly risk: RiskLevel;
   readonly operation: Readonly<Record<string, unknown>>;
@@ -54,10 +60,10 @@ export interface ApprovalRequest {
 export type RunEvent =
   | { readonly type: "session.started"; readonly sessionId: string }
   | { readonly type: "session.rejected"; readonly sessionId: string; readonly reason: string }
-  | { readonly type: "text.delta"; readonly text: string }
-  | { readonly type: "approval.required"; readonly request: ApprovalRequest }
-  | { readonly type: "approval.resolved"; readonly approvalId: string; readonly approved: boolean }
-  | { readonly type: "artifact.produced"; readonly name: string; readonly sha256?: string }
+  | { readonly type: "text.delta"; readonly sessionId: string; readonly text: string }
+  | ({ readonly type: "approval.required" } & ApprovalRequest)
+  | { readonly type: "approval.resolved"; readonly sessionId: string; readonly approvalId: string; readonly approved: boolean }
+  | { readonly type: "artifact.produced"; readonly sessionId: string; readonly name: string; readonly sha256?: string }
   | { readonly type: "session.completed"; readonly sessionId: string }
   | { readonly type: "session.failed"; readonly sessionId: string; readonly error: string }
   | { readonly type: "session.cancelled"; readonly sessionId: string; readonly reason?: string };
@@ -71,15 +77,10 @@ export interface Envelope<TPayload> {
 
 export type BridgeMessage =
   | Envelope<NodeHelloPayload>
+  | Envelope<NodeAcceptedPayload>
   | Envelope<SessionStartPayload>
   | Envelope<{ readonly sessionId: string; readonly reason?: string }>
   | Envelope<{ readonly sessionId: string; readonly event: RunEvent }>;
-
-export interface AgentAdapter {
-  readonly descriptor: AgentDescriptor;
-  start(payload: SessionStartPayload, emit: (event: RunEvent) => Promise<void>): Promise<void>;
-  cancel(sessionId: string): Promise<void>;
-}
 
 export interface PolicyDecision {
   readonly allowed: boolean;
@@ -90,6 +91,17 @@ export interface PolicyDecision {
 export interface PolicyEngine {
   evaluateSession(payload: SessionStartPayload): Promise<PolicyDecision>;
   evaluateOperation(operation: Readonly<Record<string, unknown>>): Promise<PolicyDecision>;
+}
+
+export interface AgentRunContext {
+  emit(event: RunEvent): Promise<void>;
+  evaluateOperation(operation: Readonly<Record<string, unknown>>): Promise<PolicyDecision>;
+}
+
+export interface AgentAdapter {
+  readonly descriptor: AgentDescriptor;
+  start(payload: SessionStartPayload, context: AgentRunContext): Promise<void>;
+  cancel(sessionId: string): Promise<void>;
 }
 
 export interface AuditSink {
