@@ -86,6 +86,11 @@ specnode logout
 The node receives a device token and appears in the user's account as a connected
 device. Tokens must be revocable from both the server and the local node.
 
+Next step: the concrete multi-account pairing, explicit token issuance, and
+token-to-bridge delivery flow are specified in
+`docs/proposals/byoa-multi-account-pairing.md`. It replaces the demo's single
+static token and global connection with per-account, scoped, revocable tokens.
+
 ### Workspace Allowlist
 
 ```bash
