@@ -42,6 +42,56 @@ SpecNode should return structured artifacts:
 It should not return unrestricted local filesystem state, raw secrets, or
 unbounded LLM transcripts.
 
+## BYOA Bridge Direction
+
+SpecNode can also serve as a local execution bridge for **Bring Your Own Agent**
+flows.
+
+In that mode, the browser talks only to the application server. SpecNode keeps an
+outbound connection to the server, enforces local policy, and invokes a
+user-owned local agent through an adapter such as Claude Code, Codex CLI, an
+ACP-compatible agent, or a custom command.
+
+```text
+Browser application
+        |
+        v
+SpecGraph / SpecPM / app control plane
+        ^
+        | outbound WSS session from node
+        v
+specnode on user's device
+        |
+        v
+Claude Code / Codex CLI / ACP agent / custom command
+```
+
+The core rule is:
+
+> Cloud control plane, local execution authority.
+
+See:
+
+- `docs/proposals/byoa-bridge-mvp.md`
+- `specs/byoa-bridge-protocol.md`
+- `examples/README.md`
+
+## Runnable BYOA Demo
+
+This branch includes a small browser/server/bridge demo.
+
+```bash
+npm install
+npm run dev:server
+# in another terminal
+npm run dev:bridge
+```
+
+Open `http://localhost:8787`, then start a session from the browser. The demo
+server sends a typed task to the local bridge over an outbound WebSocket, and the
+bridge runs a no-side-effects demo adapter that emits progress, local approval,
+audit, and artifact events.
+
 ## MVP Shape
 
 The smallest useful slice is:
@@ -69,6 +119,7 @@ specnode specpm validate ./dist/spec-package.yaml
 ```text
 docs/
   proposals/          Product and architecture proposals.
+examples/             Runnable browser/server/bridge demos.
 specs/                Protocol, security, and artifact contracts.
 src/                  Runtime implementation, once selected.
 tests/                Conformance and regression tests, once runtime exists.
