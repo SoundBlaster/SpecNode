@@ -132,6 +132,9 @@ async function startSession(request: IncomingMessage, response: ServerResponse):
   const agentId = String(body.agentId ?? bridge.hello.agents[0]?.id ?? "demo-agent");
   const workspaceId = String(body.workspaceId ?? bridge.hello.workspaces[0]?.id ?? "current");
   const goal = String(body.goal ?? "Inspect the repository and explain what you would do next.");
+  const inputs = typeof body.inputs === "object" && body.inputs !== null
+    ? (body.inputs as Readonly<Record<string, unknown>>)
+    : undefined;
 
   const payload: SessionStartPayload = {
     sessionId,
@@ -140,7 +143,7 @@ async function startSession(request: IncomingMessage, response: ServerResponse):
     task: {
       kind: String(body.kind ?? "repository.demo"),
       goal,
-      inputs: typeof body.inputs === "object" && body.inputs !== null ? body.inputs : undefined,
+      inputs,
     },
     policy: normalizePolicy(body.policy),
   };
