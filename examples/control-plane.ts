@@ -6,6 +6,7 @@ import type {
   AgentDescriptor,
   BridgePolicy,
   Envelope,
+  NodeAcceptedPayload,
   NodeHelloPayload,
   RunEvent,
   SessionStartPayload,
@@ -29,6 +30,9 @@ let bridge: BridgeConnection | undefined;
 const browserClients = new Set<ServerResponse>();
 const sessions = new Map<string, SessionStartPayload>();
 
+// Demo-only control plane. Do not copy this server into production without real
+// application authentication, CSRF protection, per-user bridge ownership checks,
+// rate limits, and durable audit storage for /api/sessions and /browser/events.
 const server = createServer(async (request, response) => {
   const url = new URL(request.url ?? "/", `http://${request.headers.host ?? "localhost"}`);
 
@@ -72,7 +76,7 @@ server.on("upgrade", (request, socket, head) => {
     return;
   }
 
-  if (url.searchParams.get("token") !== DEV_BRIDGE_TOKEN) {
+  if (request.headers.authorization !== `Bearer ${DEV_BRIDGE_TOKEN}`) {
     socket.destroy();
     return;
   }
@@ -91,6 +95,11 @@ bridgeServer.on("connection", (socket) => {
 
     if (message.type === "node.hello") {
       bridge = { socket, hello: message.payload as NodeHelloPayload };
+      const accepted: NodeAcceptedPayload = {
+        nodeId: bridge.hello.nodeId,
+        serverTime: new Date().toISOString(),
+      };
+      socket.send(JSON.stringify(envelope("node.accepted", accepted)));
       broadcast({ type: "bridge.hello", node: bridge.hello });
       return;
     }
@@ -118,7 +127,7 @@ bridgeServer.on("connection", (socket) => {
 
 server.listen(PORT, () => {
   console.log(`SpecNode control-plane example: http://localhost:${PORT}`);
-  console.log(`Bridge URL: ws://localhost:${PORT}/bridge/connect?token=${DEV_BRIDGE_TOKEN}`);
+  console.log(`Bridge URL: ws://localhost:${PORT}/bridge/connect`);
 });
 
 async function startSession(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -157,15 +166,31 @@ async function startSession(request: IncomingMessage, response: ServerResponse):
 
 function normalizePolicy(input: unknown): BridgePolicy {
   if (typeof input !== "object" || input === null) {
-    return { filesystem: "workspace-read", shell: "ask", network: "deny" };
+    return defaultPolicy();
   }
 
-  const maybe = input as Partial<BridgePolicy>;
+  const maybe = input as Record<string, unknown>;
   return {
-    filesystem: maybe.filesystem ?? "workspace-read",
-    shell: maybe.shell ?? "ask",
-    network: maybe.network ?? "deny",
+    filesystem: isFilesystemPolicy(maybe.filesystem) ? maybe.filesystem : "workspace-read",
+    shell: isShellPolicy(maybe.shell) ? maybe.shell : "ask",
+    network: isNetworkPolicy(maybe.network) ? maybe.network : "deny",
   };
+}
+
+function defaultPolicy(): BridgePolicy {
+  return { filesystem: "workspace-read", shell: "ask", network: "deny" };
+}
+
+function isFilesystemPolicy(value: unknown): value is BridgePolicy["filesystem"] {
+  return value === "none" || value === "workspace-read" || value === "workspace-write";
+}
+
+function isShellPolicy(value: unknown): value is BridgePolicy["shell"] {
+  return value === "deny" || value === "ask" || value === "allow";
+}
+
+function isNetworkPolicy(value: unknown): value is BridgePolicy["network"] {
+  return value === "deny" || value === "ask" || value === "allow";
 }
 
 function statusPayload(): {
@@ -266,6 +291,7 @@ function pageHtml(): string {
 <body>
   <h1>SpecNode BYOA Bridge Demo</h1>
   <p>The browser talks to this control plane. The local bridge connects outbound over WebSocket.</p>
+  <p><strong>Demo only:</strong> this localhost server intentionally omits production application auth.</p>
 
   <div class="row">
     <span id="bridgeStatus" class="pill">Bridge: unknown</span>
