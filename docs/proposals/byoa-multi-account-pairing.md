@@ -132,7 +132,7 @@ specnode logout <account>                        # delete the local token
   "tokenId": "dev_tok_123",
   "accountId": "acct_42",
   "nodeId": "node_abc",
-  "scopes": ["sessions.start", "sessions.cancel", "events.stream"],
+  "scopes": ["sessions.start", "sessions.cancel", "agents.list", "workspaces.list", "events.stream"],
   "issuedAt": "2026-06-24T00:00:00.000Z",
   "expiresAt": "2026-09-24T00:00:00.000Z",
   "lastSeenAt": "2026-06-24T00:00:00.000Z",
@@ -145,8 +145,12 @@ specnode logout <account>                        # delete the local token
   security constraint) so a leaked session token expires quickly.
 - Tokens are rotatable: the control plane may issue a new token and mark the old
   one for expiry without re-pairing.
-- `scopes` are a subset of the node's advertised capabilities; the server must
-  reject any `node.hello` capability or session that exceeds the token scope.
+- `scopes` enumerate the capabilities the token grants and must cover the node's
+  advertised `node.hello` capability set, including read capabilities such as
+  `agents.list` and `workspaces.list`. The server rejects any `node.hello`
+  capability or session operation that is not present in `scopes`. To narrow a
+  binding, the account issues a token with fewer scopes, and the node then
+  advertises only those capabilities.
 
 ## Token Storage and Delivery
 
@@ -175,10 +179,19 @@ Revocation must be effective immediately from either side, matching the local
 execution-authority principle:
 
 - Server side: `DELETE /devices/{id}` invalidates the token, drops any open
-  connection for that binding, and removes it from the registry.
+  connection for that binding, and removes it from the registry. This is the
+  authoritative revocation, and the only path that stops a copied or stolen token.
 - Local side: `specnode logout <account>` (and the local revoke control on the
-  bridge) deletes the stored token and closes the connection; the node refuses to
-  reconnect for that binding until re-paired.
+  bridge) closes the connection and calls the server-side `DELETE /devices/{id}`
+  for that binding before deleting the stored token, so the credential is
+  invalidated on the control plane rather than merely forgotten locally.
+- Offline caveat: if the device cannot reach the control plane at logout, deleting
+  the local token stops this node from using it, but the token stays valid on the
+  server until it expires or is revoked from the account device list. Local
+  deletion alone is therefore not server-side revocation. The bridge marks the
+  logout as pending server revocation and retries `DELETE /devices/{id}` when it
+  next reaches the control plane; a user worried about a stolen token must revoke
+  from the account device list, which does not depend on the device being online.
 
 ## Security Constraints
 
