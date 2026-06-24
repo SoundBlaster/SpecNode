@@ -29,16 +29,11 @@ const workspaces: readonly WorkspaceDescriptor[] = [
   },
 ];
 
-const demoAgent = new DemoAgentAdapter();
-const runtime: BridgeRuntimeOptions = {
-  nodeId: NODE_ID,
-  agents: [demoAgent],
-  workspaces,
-  policy: new LocalPolicyEngine(workspaces),
-  audit: new ConsoleAuditSink(),
-};
-
-connect();
+// `demoAgent`, `runtime`, and the initial `connect()` call live at the bottom of
+// this file. Class declarations are not hoisted, so they must be evaluated before
+// the adapters and policy engine below are instantiated.
+let demoAgent: DemoAgentAdapter;
+let runtime: BridgeRuntimeOptions;
 
 function connect(): void {
   const socket = new WebSocket(SERVER_URL, {
@@ -340,3 +335,16 @@ function fakeSha(input: string): string {
 
   return hash.toString(16).padStart(64, "0");
 }
+
+// Instantiate adapters and the policy engine now that their classes are declared,
+// then open the outbound connection to the control plane.
+demoAgent = new DemoAgentAdapter();
+runtime = {
+  nodeId: NODE_ID,
+  agents: [demoAgent],
+  workspaces,
+  policy: new LocalPolicyEngine(workspaces),
+  audit: new ConsoleAuditSink(),
+};
+
+connect();

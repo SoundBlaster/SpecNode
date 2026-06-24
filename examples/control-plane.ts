@@ -94,13 +94,14 @@ bridgeServer.on("connection", (socket) => {
     const message = parseEnvelope(data.toString());
 
     if (message.type === "node.hello") {
-      bridge = { socket, hello: message.payload as NodeHelloPayload };
+      const hello = message.payload as NodeHelloPayload;
+      bridge = { socket, hello };
       const accepted: NodeAcceptedPayload = {
-        nodeId: bridge.hello.nodeId,
+        nodeId: hello.nodeId,
         serverTime: new Date().toISOString(),
       };
       socket.send(JSON.stringify(envelope("node.accepted", accepted)));
-      broadcast({ type: "bridge.hello", node: bridge.hello });
+      broadcast({ type: "bridge.hello", node: hello });
       return;
     }
 
