@@ -7,9 +7,17 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
+    "dev:server": "tsx examples/control-plane.ts",
+    "dev:bridge": "tsx examples/local-bridge.ts",
     "typecheck": "tsc --noEmit"
   },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
   "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/ws": "^8.5.13",
+    "tsx": "^4.19.0",
     "typescript": "^5.5.0"
   }
 }
