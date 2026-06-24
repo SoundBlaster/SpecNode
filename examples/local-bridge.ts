@@ -118,7 +118,7 @@ function connect(): void {
 
 async function handleSessionStart(socket: WebSocket, payload: SessionStartPayload): Promise<void> {
   if (!controller.canAcceptSession()) {
-    await emit(socket, payload.sessionId, {
+    await auditAndEmit(socket, payload.sessionId, {
       type: "session.rejected",
       sessionId: payload.sessionId,
       reason: "Node is revoked by the local user.",
@@ -129,7 +129,7 @@ async function handleSessionStart(socket: WebSocket, payload: SessionStartPayloa
   const sessionDecision = await runtime.policy.evaluateSession(payload);
 
   if (!sessionDecision.allowed) {
-    await emit(socket, payload.sessionId, {
+    await auditAndEmit(socket, payload.sessionId, {
       type: "session.rejected",
       sessionId: payload.sessionId,
       reason: sessionDecision.reason ?? "Local policy rejected the session.",
@@ -147,9 +147,9 @@ async function handleSessionStart(socket: WebSocket, payload: SessionStartPayloa
       reason: sessionDecision.reason ?? "Local policy requires approval before starting this session.",
     });
 
-    await emit(socket, payload.sessionId, { type: "approval.required", ...approval });
+    await auditAndEmit(socket, payload.sessionId, { type: "approval.required", ...approval });
     const approved = await approvalResolver.resolve(approval);
-    await emit(socket, payload.sessionId, {
+    await auditAndEmit(socket, payload.sessionId, {
       type: "approval.resolved",
       sessionId: payload.sessionId,
       approvalId: approval.approvalId,
@@ -157,7 +157,7 @@ async function handleSessionStart(socket: WebSocket, payload: SessionStartPayloa
     });
 
     if (!approved) {
-      await emit(socket, payload.sessionId, {
+      await auditAndEmit(socket, payload.sessionId, {
         type: "session.rejected",
         sessionId: payload.sessionId,
         reason: "Local user rejected the preflight session approval.",
@@ -169,7 +169,7 @@ async function handleSessionStart(socket: WebSocket, payload: SessionStartPayloa
   const adapter = runtime.agents.find((candidate) => candidate.descriptor.id === payload.agentId);
 
   if (!adapter) {
-    await emit(socket, payload.sessionId, {
+    await auditAndEmit(socket, payload.sessionId, {
       type: "session.rejected",
       sessionId: payload.sessionId,
       reason: `Unknown agent: ${payload.agentId}`,
@@ -178,10 +178,7 @@ async function handleSessionStart(socket: WebSocket, payload: SessionStartPayloa
   }
 
   const context: AgentRunContext = {
-    emit: async (event) => {
-      await runtime.audit.record(event);
-      await emit(socket, payload.sessionId, event);
-    },
+    emit: async (event) => auditAndEmit(socket, payload.sessionId, event),
     evaluateOperation: async (operation) => runtime.policy.evaluateOperation(operation),
   };
 
@@ -195,6 +192,14 @@ async function emit(socket: WebSocket, sessionId: string, event: RunEvent): Prom
 
   const message = envelope("session.event", { sessionId, event });
   socket.send(JSON.stringify(message));
+}
+
+// Record every run event to the local audit log before sending it to the control
+// plane. Preflight session approvals are emitted here (not through the adapter's
+// context.emit), so without this they would bypass the durable local audit log.
+async function auditAndEmit(socket: WebSocket, sessionId: string, event: RunEvent): Promise<void> {
+  await runtime.audit.record(event);
+  await emit(socket, sessionId, event);
 }
 
 function send<TPayload>(socket: WebSocket, type: string, payload: TPayload): void {
@@ -438,7 +443,7 @@ function printStatus(): void {
       `  workspaces:   ${runtime.workspaces.map((workspace) => `${workspace.name} (${workspace.id})`).join(", ")}`,
       "  policy:       network=deny, shell=ask(local approval), workspace-write=ask(local approval)",
       `  approval:     ${APPROVAL_MODE}`,
-      `  pendingApproval: ${interactiveControl.hasPendingApproval() ? "yes" : "no"}`,
+      `  pendingApprovals: ${interactiveControl.pendingApprovalCount()}`,
       `  auditLog:     ${AUDIT_FILE}`,
     ].join("\n"),
   );

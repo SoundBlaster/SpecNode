@@ -93,6 +93,24 @@ describe("InteractiveControl", () => {
     assert.equal(revoked, false);
   });
 
+  it("queues concurrent approvals and resolves them FIFO without dropping any", async () => {
+    const control = new InteractiveControl(noopHandlers(), () => {});
+    const first: ApprovalRequest = { ...sampleApproval, approvalId: "appr_first" };
+    const second: ApprovalRequest = { ...sampleApproval, approvalId: "appr_second" };
+
+    const d1 = control.resolve(first);
+    const d2 = control.resolve(second);
+    assert.equal(control.pendingApprovalCount(), 2);
+
+    control.handleLine("y");
+    assert.equal(await d1, true);
+    assert.equal(control.pendingApprovalCount(), 1);
+
+    control.handleLine("n");
+    assert.equal(await d2, false);
+    assert.equal(control.pendingApprovalCount(), 0);
+  });
+
   it("dispatches control commands when idle", () => {
     const calls: string[] = [];
     const handlers: ControlCommandHandlers = {

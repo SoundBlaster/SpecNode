@@ -70,7 +70,10 @@ export interface ControlCommandHandlers {
  * decides — approvals are never silently inherited from the browser.
  */
 export class InteractiveControl implements ApprovalResolver {
-  private pending?: (approved: boolean) => void;
+  private readonly queue: Array<{
+    readonly request: ApprovalRequest;
+    readonly resolve: (approved: boolean) => void;
+  }> = [];
 
   constructor(
     private readonly handlers: ControlCommandHandlers,
@@ -78,29 +81,54 @@ export class InteractiveControl implements ApprovalResolver {
   ) {}
 
   hasPendingApproval(): boolean {
-    return this.pending !== undefined;
+    return this.queue.length > 0;
   }
 
-  resolve(request: ApprovalRequest): Promise<boolean> {
-    this.out(`\n[approval needed] ${request.reason}`);
-    this.out(`  operation=${JSON.stringify(request.operation)} risk=${request.risk}`);
-    this.out("  type 'y' to allow, anything else to deny");
+  pendingApprovalCount(): number {
+    return this.queue.length;
+  }
 
+  /**
+   * Block until the local user answers. Concurrent sessions are serialized into a
+   * FIFO queue and prompted one at a time, so a later request can never overwrite
+   * an earlier one and leave it hanging without a resolution.
+   */
+  resolve(request: ApprovalRequest): Promise<boolean> {
     return new Promise<boolean>((resolve) => {
-      this.pending = resolve;
+      this.queue.push({ request, resolve });
+
+      if (this.queue.length === 1) {
+        this.promptCurrent();
+      } else {
+        this.out(`[approval queued] ${request.reason} (${this.queue.length - 1} ahead)`);
+      }
     });
   }
 
-  /** Feed one line of local input. Answers a pending approval first, else runs a command. */
+  private promptCurrent(): void {
+    const current = this.queue[0];
+    if (!current) {
+      return;
+    }
+
+    this.out(`\n[approval needed] ${current.request.reason}`);
+    this.out(`  operation=${JSON.stringify(current.request.operation)} risk=${current.request.risk}`);
+    this.out("  type 'y' to allow, anything else to deny");
+  }
+
+  /** Feed one line of local input. Answers the current approval first, else runs a command. */
   handleLine(line: string): void {
     const trimmed = line.trim();
 
-    if (this.pending) {
+    if (this.queue.length > 0) {
       const approved = /^y(es)?$/i.test(trimmed);
-      const resolve = this.pending;
-      this.pending = undefined;
+      const current = this.queue.shift();
       this.out(approved ? "  -> approved" : "  -> denied");
-      resolve(approved);
+      current?.resolve(approved);
+
+      if (this.queue.length > 0) {
+        this.promptCurrent();
+      }
       return;
     }
 
