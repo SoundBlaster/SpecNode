@@ -3,12 +3,20 @@ import {
   createEnvelope,
   createNodeHello,
   parseEnvelope,
+  type AgentAdapter,
   type AgentRunContext,
+  type AuditSink,
   type BridgeRuntimeOptions,
+  type Envelope,
   type RunEvent,
   type SessionStartPayload,
 } from "./index.js";
-import { NodeController, createApprovalRequest, type ApprovalResolver } from "./local-control.js";
+import {
+  CompositeAuditSink,
+  NodeController,
+  createApprovalRequest,
+  type ApprovalResolver,
+} from "./local-control.js";
 
 export interface BridgeConfig {
   readonly serverUrl: string;
@@ -18,9 +26,59 @@ export interface BridgeConfig {
   readonly log?: (message: string) => void;
 }
 
-// Reusable bridge runtime: the outbound connection, session orchestration, and
-// audited event emission. Demo and real adapters wire it through `BridgeConfig`.
-export class Bridge {
+// The bridge's outbound channel. Implemented by `Bridge` so a sink resolves the
+// live socket at send time instead of capturing one a reconnect can close.
+export interface OutboundChannel {
+  deliver(message: Envelope<unknown>): void;
+}
+
+// A run-event sink that records by putting the event on the wire, keyed by the
+// admitted session id so events route correctly regardless of adapter-supplied
+// event data.
+export class WireSink implements AuditSink {
+  constructor(
+    private readonly channel: OutboundChannel,
+    private readonly sessionId: string,
+  ) {}
+
+  async record(event: RunEvent): Promise<void> {
+    this.channel.deliver(createEnvelope("session.event", { sessionId: this.sessionId, event }));
+  }
+}
+
+// The outcome of admitting a session: ask it to settle itself rather than
+// branching on a flag at the call site.
+interface Admission {
+  settle(): Promise<void>;
+}
+
+class RejectedSession implements Admission {
+  constructor(
+    private readonly sink: AuditSink,
+    private readonly sessionId: string,
+    private readonly reason: string,
+  ) {}
+
+  async settle(): Promise<void> {
+    await this.sink.record({ type: "session.rejected", sessionId: this.sessionId, reason: this.reason });
+  }
+}
+
+class AdmittedSession implements Admission {
+  constructor(
+    private readonly adapter: AgentAdapter,
+    private readonly payload: SessionStartPayload,
+    private readonly context: AgentRunContext,
+  ) {}
+
+  async settle(): Promise<void> {
+    await this.adapter.start(this.payload, this.context);
+  }
+}
+
+// Reusable bridge runtime: the outbound connection and session admission. Demo
+// and real adapters wire it through `BridgeConfig`.
+export class Bridge implements OutboundChannel {
   private socket?: WebSocket;
   private readonly controller: NodeController;
   private readonly log: (message: string) => void;
@@ -39,6 +97,14 @@ export class Bridge {
 
   isConnected(): boolean {
     return this.socket?.readyState === WebSocket.OPEN;
+  }
+
+  // Send over the current connection, read at call time so an in-flight session
+  // keeps reaching the control plane across a reconnect.
+  deliver(message: Envelope<unknown>): void {
+    if (this.socket?.readyState === WebSocket.OPEN) {
+      this.socket.send(JSON.stringify(message));
+    }
   }
 
   revoke(): void {
@@ -100,7 +166,7 @@ export class Bridge {
       }
 
       if (message.type === "session.start") {
-        await this.handleSessionStart(message.payload as SessionStartPayload);
+        await this.start(message.payload as SessionStartPayload);
         return;
       }
 
@@ -118,71 +184,61 @@ export class Bridge {
     }
   }
 
-  private async reject(sessionId: string, reason: string): Promise<void> {
-    await this.auditAndEmit(sessionId, { type: "session.rejected", sessionId, reason });
+  private async start(payload: SessionStartPayload): Promise<void> {
+    const sink = new CompositeAuditSink([this.config.runtime.audit, new WireSink(this, payload.sessionId)]);
+    const admission = await this.admit(payload, sink);
+    await admission.settle();
   }
 
-  private async handleSessionStart(payload: SessionStartPayload): Promise<void> {
+  private async admit(payload: SessionStartPayload, sink: AuditSink): Promise<Admission> {
+    const { sessionId } = payload;
+
     if (!this.controller.canAcceptSession()) {
-      return this.reject(payload.sessionId, "Node is revoked by the local user.");
+      return new RejectedSession(sink, sessionId, "Node is revoked by the local user.");
     }
 
-    const sessionDecision = await this.config.runtime.policy.evaluateSession(payload);
+    const decision = await this.config.runtime.policy.evaluateSession(payload);
 
-    if (!sessionDecision.allowed) {
-      return this.reject(payload.sessionId, sessionDecision.reason ?? "Local policy rejected the session.");
+    if (!decision.allowed) {
+      return new RejectedSession(sink, sessionId, decision.reason ?? "Local policy rejected the session.");
     }
 
-    if (sessionDecision.approvalRequired) {
-      const approval = createApprovalRequest(payload.sessionId, {
-        risk: "high",
-        operation: {
-          kind: "session.start",
-          policy: payload.policy,
-        },
-        reason: sessionDecision.reason ?? "Local policy requires approval before starting this session.",
-      });
-
-      await this.auditAndEmit(payload.sessionId, { type: "approval.required", ...approval });
-      const approved = await this.config.approvals.resolve(approval);
-      await this.auditAndEmit(payload.sessionId, {
-        type: "approval.resolved",
-        sessionId: payload.sessionId,
-        approvalId: approval.approvalId,
-        approved,
-      });
-
-      if (!approved) {
-        return this.reject(payload.sessionId, "Local user rejected the preflight session approval.");
-      }
+    if (decision.approvalRequired && !(await this.preflightApproved(payload, sink, decision.reason))) {
+      return new RejectedSession(sink, sessionId, "Local user rejected the preflight session approval.");
     }
 
     const adapter = this.config.runtime.agents.find((candidate) => candidate.descriptor.id === payload.agentId);
 
     if (!adapter) {
-      return this.reject(payload.sessionId, `Unknown agent: ${payload.agentId}`);
+      return new RejectedSession(sink, sessionId, `Unknown agent: ${payload.agentId}`);
     }
 
-    const context: AgentRunContext = {
-      emit: async (event) => this.auditAndEmit(payload.sessionId, event),
-      evaluateOperation: async (operation) => this.config.runtime.policy.evaluateOperation(operation),
+    return new AdmittedSession(adapter, payload, this.contextFor(payload, sink));
+  }
+
+  private async preflightApproved(payload: SessionStartPayload, sink: AuditSink, reason?: string): Promise<boolean> {
+    const approval = createApprovalRequest(payload.sessionId, {
+      risk: "high",
+      operation: { kind: "session.start", policy: payload.policy },
+      reason: reason ?? "Local policy requires approval before starting this session.",
+    });
+
+    await sink.record({ type: "approval.required", ...approval });
+    const approved = await this.config.approvals.resolve(approval);
+    await sink.record({
+      type: "approval.resolved",
+      sessionId: payload.sessionId,
+      approvalId: approval.approvalId,
+      approved,
+    });
+
+    return approved;
+  }
+
+  private contextFor(payload: SessionStartPayload, sink: AuditSink): AgentRunContext {
+    return {
+      emit: (event) => sink.record(event),
+      evaluateOperation: (operation) => this.config.runtime.policy.evaluateOperation(operation),
     };
-
-    await adapter.start(payload, context);
-  }
-
-  private async emit(sessionId: string, event: RunEvent): Promise<void> {
-    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
-      return;
-    }
-
-    this.socket.send(JSON.stringify(createEnvelope("session.event", { sessionId, event })));
-  }
-
-  // Record every run event to the local audit log before sending it, so preflight
-  // approvals (emitted here, not via the adapter's context.emit) stay durable.
-  private async auditAndEmit(sessionId: string, event: RunEvent): Promise<void> {
-    await this.config.runtime.audit.record(event);
-    await this.emit(sessionId, event);
   }
 }
