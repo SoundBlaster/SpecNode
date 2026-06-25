@@ -5,10 +5,11 @@
 .env.*
 !.env.example
 
-# Local runtime state
+# Local runtime state and agent tooling
 .specnode/
 runs/
 .worktrees/
+.claude/
 
 # Python
 .venv/
