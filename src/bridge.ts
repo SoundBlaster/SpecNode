@@ -7,6 +7,7 @@ import {
   type AgentRunContext,
   type AuditSink,
   type BridgeRuntimeOptions,
+  type Envelope,
   type RunEvent,
   type SessionStartPayload,
 } from "./index.js";
@@ -25,17 +26,23 @@ export interface BridgeConfig {
   readonly log?: (message: string) => void;
 }
 
-// A run-event sink that records by putting the event on the wire. Composed with
-// the local audit sink so every event is logged before it leaves the device.
-class WireSink implements AuditSink {
-  constructor(private readonly socket: WebSocket | undefined) {}
+// The bridge's outbound channel. Implemented by `Bridge` so a sink resolves the
+// live socket at send time instead of capturing one a reconnect can close.
+export interface OutboundChannel {
+  deliver(message: Envelope<unknown>): void;
+}
+
+// A run-event sink that records by putting the event on the wire, keyed by the
+// admitted session id so events route correctly regardless of adapter-supplied
+// event data.
+export class WireSink implements AuditSink {
+  constructor(
+    private readonly channel: OutboundChannel,
+    private readonly sessionId: string,
+  ) {}
 
   async record(event: RunEvent): Promise<void> {
-    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
-      return;
-    }
-
-    this.socket.send(JSON.stringify(createEnvelope("session.event", { sessionId: event.sessionId, event })));
+    this.channel.deliver(createEnvelope("session.event", { sessionId: this.sessionId, event }));
   }
 }
 
@@ -71,7 +78,7 @@ class AdmittedSession implements Admission {
 
 // Reusable bridge runtime: the outbound connection and session admission. Demo
 // and real adapters wire it through `BridgeConfig`.
-export class Bridge {
+export class Bridge implements OutboundChannel {
   private socket?: WebSocket;
   private readonly controller: NodeController;
   private readonly log: (message: string) => void;
@@ -90,6 +97,14 @@ export class Bridge {
 
   isConnected(): boolean {
     return this.socket?.readyState === WebSocket.OPEN;
+  }
+
+  // Send over the current connection, read at call time so an in-flight session
+  // keeps reaching the control plane across a reconnect.
+  deliver(message: Envelope<unknown>): void {
+    if (this.socket?.readyState === WebSocket.OPEN) {
+      this.socket.send(JSON.stringify(message));
+    }
   }
 
   revoke(): void {
@@ -170,7 +185,7 @@ export class Bridge {
   }
 
   private async start(payload: SessionStartPayload): Promise<void> {
-    const sink = new CompositeAuditSink([this.config.runtime.audit, new WireSink(this.socket)]);
+    const sink = new CompositeAuditSink([this.config.runtime.audit, new WireSink(this, payload.sessionId)]);
     const admission = await this.admit(payload, sink);
     await admission.settle();
   }
