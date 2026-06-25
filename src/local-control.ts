@@ -155,7 +155,12 @@ export class InteractiveControl implements ApprovalResolver {
       return;
     }
 
-    const handlerName = InteractiveControl.COMMANDS[trimmed.toLowerCase()];
+    const key = trimmed.toLowerCase();
+    // Own-property lookup only: a name like "constructor" must not resolve to an
+    // inherited Object member and call a missing handler.
+    const handlerName = Object.hasOwn(InteractiveControl.COMMANDS, key)
+      ? InteractiveControl.COMMANDS[key]
+      : undefined;
     if (handlerName === undefined) {
       this.out(`unknown command: ${trimmed} (type 'help')`);
       return;

@@ -132,6 +132,24 @@ describe("InteractiveControl", () => {
 
     assert.deepEqual(calls, ["revoke", "reconnect", "status", "audit", "quit", "help"]);
   });
+
+  it("treats inherited Object property names as unknown commands without throwing", () => {
+    const calls: string[] = [];
+    const handlers: ControlCommandHandlers = {
+      onRevoke: () => calls.push("revoke"),
+      onReconnect: () => calls.push("reconnect"),
+      onStatus: () => calls.push("status"),
+      onAudit: () => calls.push("audit"),
+      onQuit: () => calls.push("quit"),
+      onHelp: () => calls.push("help"),
+    };
+    const control = new InteractiveControl(handlers, () => {});
+
+    for (const name of ["constructor", "__proto__", "toString", "hasOwnProperty", "valueOf"]) {
+      assert.doesNotThrow(() => control.handleLine(name));
+    }
+    assert.deepEqual(calls, []);
+  });
 });
 
 describe("NodeController", () => {
