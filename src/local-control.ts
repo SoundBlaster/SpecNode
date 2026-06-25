@@ -70,6 +70,25 @@ export interface ControlCommandHandlers {
  * decides — approvals are never silently inherited from the browser.
  */
 export class InteractiveControl implements ApprovalResolver {
+  // Command aliases -> the handler they invoke. A lookup table keeps handleLine
+  // free of a type-branching switch ladder.
+  private static readonly COMMANDS: Readonly<Record<string, keyof ControlCommandHandlers>> = {
+    r: "onRevoke",
+    revoke: "onRevoke",
+    c: "onReconnect",
+    reconnect: "onReconnect",
+    s: "onStatus",
+    status: "onStatus",
+    a: "onAudit",
+    audit: "onAudit",
+    q: "onQuit",
+    quit: "onQuit",
+    exit: "onQuit",
+    h: "onHelp",
+    help: "onHelp",
+    "?": "onHelp",
+  };
+
   private readonly queue: Array<{
     readonly request: ApprovalRequest;
     readonly resolve: (approved: boolean) => void;
@@ -132,38 +151,17 @@ export class InteractiveControl implements ApprovalResolver {
       return;
     }
 
-    switch (trimmed.toLowerCase()) {
-      case "":
-        return;
-      case "r":
-      case "revoke":
-        this.handlers.onRevoke();
-        return;
-      case "c":
-      case "reconnect":
-        this.handlers.onReconnect();
-        return;
-      case "s":
-      case "status":
-        this.handlers.onStatus();
-        return;
-      case "a":
-      case "audit":
-        this.handlers.onAudit();
-        return;
-      case "q":
-      case "quit":
-      case "exit":
-        this.handlers.onQuit();
-        return;
-      case "h":
-      case "help":
-      case "?":
-        this.handlers.onHelp();
-        return;
-      default:
-        this.out(`unknown command: ${trimmed} (type 'help')`);
+    if (trimmed === "") {
+      return;
     }
+
+    const handlerName = InteractiveControl.COMMANDS[trimmed.toLowerCase()];
+    if (handlerName === undefined) {
+      this.out(`unknown command: ${trimmed} (type 'help')`);
+      return;
+    }
+
+    this.handlers[handlerName]();
   }
 }
 

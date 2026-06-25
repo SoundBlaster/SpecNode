@@ -11,14 +11,26 @@
     "dev:server": "tsx examples/control-plane.ts",
     "dev:bridge": "tsx examples/local-bridge.ts",
     "test": "node --import tsx --test tests/*.test.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint . --ext .ts --max-warnings 0",
+    "depcruise": "depcruise src examples tests --config .dependency-cruiser.cjs",
+    "betterer": "betterer --config .betterer.cjs",
+    "betterer:ci": "betterer ci --config .betterer.cjs",
+    "verify": "bash verify.sh"
   },
   "dependencies": {
     "ws": "^8.18.0"
   },
   "devDependencies": {
+    "@betterer/cli": "^5.4.0",
+    "@betterer/eslint": "^5.4.0",
+    "@eslint-community/eslint-plugin-eslint-comments": "^4.7.2",
     "@types/node": "^22.10.0",
     "@types/ws": "^8.5.13",
+    "@typescript-eslint/parser": "^7.18.0",
+    "dependency-cruiser": "^16.10.4",
+    "eslint": "^8.57.1",
+    "eslint-plugin-import": "^2.32.0",
     "tsx": "^4.19.0",
     "typescript": "^5.5.0"
   }
