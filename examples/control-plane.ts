@@ -2,15 +2,16 @@ import { randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { URL } from "node:url";
 import { WebSocket, WebSocketServer } from "ws";
-import type {
-  AgentDescriptor,
-  BridgePolicy,
-  Envelope,
-  NodeAcceptedPayload,
-  NodeHelloPayload,
-  RunEvent,
-  SessionStartPayload,
-  WorkspaceDescriptor,
+import {
+  createEnvelope,
+  parseEnvelope,
+  type AgentDescriptor,
+  type BridgePolicy,
+  type NodeAcceptedPayload,
+  type NodeHelloPayload,
+  type RunEvent,
+  type SessionStartPayload,
+  type WorkspaceDescriptor,
 } from "../src/index.js";
 
 const PORT = Number(process.env.PORT ?? 8787);
@@ -100,7 +101,7 @@ bridgeServer.on("connection", (socket) => {
         nodeId: hello.nodeId,
         serverTime: new Date().toISOString(),
       };
-      socket.send(JSON.stringify(envelope("node.accepted", accepted)));
+      socket.send(JSON.stringify(createEnvelope("node.accepted", accepted)));
       broadcast({ type: "bridge.hello", node: hello });
       return;
     }
@@ -159,7 +160,7 @@ async function startSession(request: IncomingMessage, response: ServerResponse):
   };
 
   sessions.set(sessionId, payload);
-  bridge.socket.send(JSON.stringify(envelope("session.start", payload)));
+  bridge.socket.send(JSON.stringify(createEnvelope("session.start", payload)));
 
   broadcast({ type: "session.queued", sessionId, agentId, workspaceId, goal });
   sendJson(response, 202, { sessionId });
@@ -227,25 +228,6 @@ function attachBrowserEvents(response: ServerResponse): void {
   response.write("retry: 1000\n\n");
   browserClients.add(response);
   response.on("close", () => browserClients.delete(response));
-}
-
-function envelope<TPayload>(type: string, payload: TPayload): Envelope<TPayload> {
-  return {
-    id: randomUUID(),
-    type,
-    timestamp: new Date().toISOString(),
-    payload,
-  };
-}
-
-function parseEnvelope(raw: string): Envelope<unknown> {
-  const value = JSON.parse(raw) as Partial<Envelope<unknown>>;
-
-  if (!value.id || !value.type || !value.timestamp || value.payload === undefined) {
-    throw new Error("Invalid bridge envelope");
-  }
-
-  return value as Envelope<unknown>;
 }
 
 async function readJson(request: IncomingMessage): Promise<Record<string, unknown>> {

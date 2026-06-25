@@ -2,15 +2,11 @@ import { randomUUID } from "node:crypto";
 import { createInterface } from "node:readline";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { WebSocket } from "ws";
 import {
-  createNodeHello,
   type AgentAdapter,
   type AgentRunContext,
-  type ApprovalRequest,
   type AuditSink,
   type BridgeRuntimeOptions,
-  type Envelope,
   type PolicyDecision,
   type PolicyEngine,
   type RunEvent,
@@ -22,11 +18,12 @@ import {
   CompositeAuditSink,
   FileAuditSink,
   InteractiveControl,
-  NodeController,
+  createApprovalRequest,
   decideApprovalMode,
   tailAuditLog,
   type ApprovalResolver,
 } from "../src/local-control.js";
+import { Bridge } from "../src/bridge.js";
 
 const SERVER_URL = process.env.SPECNODE_SERVER_URL ?? "ws://localhost:8787/bridge/connect";
 const DEV_BRIDGE_TOKEN = process.env.SPECNODE_DEV_TOKEN ?? "dev";
@@ -42,188 +39,6 @@ const workspaces: readonly WorkspaceDescriptor[] = [
     name: WORKSPACE_NAME,
   },
 ];
-
-// `demoAgent`, `runtime`, the local control surface, and the initial `connect()`
-// call live at the bottom of this file. Class declarations are not hoisted, so
-// they must be evaluated before the adapters and policy engine below are
-// instantiated.
-let demoAgent: DemoAgentAdapter;
-let runtime: BridgeRuntimeOptions;
-let controller: NodeController;
-let approvalResolver: ApprovalResolver;
-let activeSocket: WebSocket | undefined;
-
-function connect(): void {
-  if (controller.isRevoked()) {
-    console.log("Node is revoked; not connecting. Type 'reconnect' to resume.");
-    return;
-  }
-
-  const socket = new WebSocket(SERVER_URL, {
-    headers: {
-      Authorization: `Bearer ${DEV_BRIDGE_TOKEN}`,
-    },
-  });
-  activeSocket = socket;
-
-  socket.on("open", () => {
-    console.log(`Connected to ${SERVER_URL} (approval mode: ${APPROVAL_MODE})`);
-    send(socket, "node.hello", createNodeHello(runtime));
-  });
-
-  socket.on("message", async (data) => {
-    try {
-      const message = parseEnvelope(data.toString());
-
-      if (message.type === "node.accepted") {
-        console.log("Control plane accepted node handshake.");
-        return;
-      }
-
-      if (message.type === "session.start") {
-        await handleSessionStart(socket, message.payload as SessionStartPayload);
-        return;
-      }
-
-      if (message.type === "session.cancel") {
-        const payload = message.payload as { sessionId: string };
-        await demoAgent.cancel(payload.sessionId);
-        return;
-      }
-
-      console.warn(`Ignoring unsupported message type: ${message.type}`);
-    } catch (error) {
-      console.error(error instanceof Error ? error.message : error);
-    }
-  });
-
-  socket.on("close", () => {
-    if (activeSocket === socket) {
-      activeSocket = undefined;
-    }
-
-    if (!controller.shouldReconnect()) {
-      console.log("Disconnected (revoked). Not reconnecting until you type 'reconnect'.");
-      return;
-    }
-
-    console.log("Disconnected from control plane. Reconnecting in 1s...");
-    setTimeout(connect, 1000);
-  });
-
-  socket.on("error", (error) => {
-    console.error(`Bridge socket error: ${error.message}`);
-  });
-}
-
-async function handleSessionStart(socket: WebSocket, payload: SessionStartPayload): Promise<void> {
-  if (!controller.canAcceptSession()) {
-    await auditAndEmit(socket, payload.sessionId, {
-      type: "session.rejected",
-      sessionId: payload.sessionId,
-      reason: "Node is revoked by the local user.",
-    });
-    return;
-  }
-
-  const sessionDecision = await runtime.policy.evaluateSession(payload);
-
-  if (!sessionDecision.allowed) {
-    await auditAndEmit(socket, payload.sessionId, {
-      type: "session.rejected",
-      sessionId: payload.sessionId,
-      reason: sessionDecision.reason ?? "Local policy rejected the session.",
-    });
-    return;
-  }
-
-  if (sessionDecision.approvalRequired) {
-    const approval = createApprovalRequest(payload.sessionId, {
-      risk: "high",
-      operation: {
-        kind: "session.start",
-        policy: payload.policy,
-      },
-      reason: sessionDecision.reason ?? "Local policy requires approval before starting this session.",
-    });
-
-    await auditAndEmit(socket, payload.sessionId, { type: "approval.required", ...approval });
-    const approved = await approvalResolver.resolve(approval);
-    await auditAndEmit(socket, payload.sessionId, {
-      type: "approval.resolved",
-      sessionId: payload.sessionId,
-      approvalId: approval.approvalId,
-      approved,
-    });
-
-    if (!approved) {
-      await auditAndEmit(socket, payload.sessionId, {
-        type: "session.rejected",
-        sessionId: payload.sessionId,
-        reason: "Local user rejected the preflight session approval.",
-      });
-      return;
-    }
-  }
-
-  const adapter = runtime.agents.find((candidate) => candidate.descriptor.id === payload.agentId);
-
-  if (!adapter) {
-    await auditAndEmit(socket, payload.sessionId, {
-      type: "session.rejected",
-      sessionId: payload.sessionId,
-      reason: `Unknown agent: ${payload.agentId}`,
-    });
-    return;
-  }
-
-  const context: AgentRunContext = {
-    emit: async (event) => auditAndEmit(socket, payload.sessionId, event),
-    evaluateOperation: async (operation) => runtime.policy.evaluateOperation(operation),
-  };
-
-  await adapter.start(payload, context);
-}
-
-async function emit(socket: WebSocket, sessionId: string, event: RunEvent): Promise<void> {
-  if (socket.readyState !== WebSocket.OPEN) {
-    return;
-  }
-
-  const message = envelope("session.event", { sessionId, event });
-  socket.send(JSON.stringify(message));
-}
-
-// Record every run event to the local audit log before sending it to the control
-// plane. Preflight session approvals are emitted here (not through the adapter's
-// context.emit), so without this they would bypass the durable local audit log.
-async function auditAndEmit(socket: WebSocket, sessionId: string, event: RunEvent): Promise<void> {
-  await runtime.audit.record(event);
-  await emit(socket, sessionId, event);
-}
-
-function send<TPayload>(socket: WebSocket, type: string, payload: TPayload): void {
-  socket.send(JSON.stringify(envelope(type, payload)));
-}
-
-function envelope<TPayload>(type: string, payload: TPayload): Envelope<TPayload> {
-  return {
-    id: randomUUID(),
-    type,
-    timestamp: new Date().toISOString(),
-    payload,
-  };
-}
-
-function parseEnvelope(raw: string): Envelope<unknown> {
-  const value = JSON.parse(raw) as Partial<Envelope<unknown>>;
-
-  if (!value.id || !value.type || !value.timestamp || value.payload === undefined) {
-    throw new Error("Invalid envelope from control plane");
-  }
-
-  return value as Envelope<unknown>;
-}
 
 class DemoAgentAdapter implements AgentAdapter {
   readonly descriptor = {
@@ -350,17 +165,6 @@ class ConsoleAuditSink implements AuditSink {
   }
 }
 
-function createApprovalRequest(
-  sessionId: string,
-  input: Omit<ApprovalRequest, "sessionId" | "approvalId">,
-): ApprovalRequest {
-  return {
-    sessionId,
-    approvalId: randomUUID(),
-    ...input,
-  };
-}
-
 function fakeSha(input: string): string {
   const bytes = Buffer.from(input, "utf8");
   let hash = 0;
@@ -372,47 +176,37 @@ function fakeSha(input: string): string {
   return hash.toString(16).padStart(64, "0");
 }
 
-// Instantiate adapters and the policy engine now that their classes are declared,
-// then wire the local control surface and open the outbound connection.
-demoAgent = new DemoAgentAdapter();
-runtime = {
-  nodeId: NODE_ID,
-  agents: [demoAgent],
-  workspaces,
-  policy: new LocalPolicyEngine(workspaces),
-  audit: new CompositeAuditSink([new ConsoleAuditSink(), new FileAuditSink(AUDIT_FILE)]),
-};
-
-// The local owner ("Role B") controls execution from here: revoke cuts the cloud
-// off, and an interactive resolver puts every risky operation behind a local
-// decision instead of a hardcoded auto-deny.
-controller = new NodeController(
-  {
-    open: () => connect(),
-    close: () => activeSocket?.close(),
-  },
-  (message) => console.log(message),
-);
+// Wire the reusable bridge runtime to the demo adapter, demo policy, and the local
+// control surface, then open the outbound connection.
+let bridge: Bridge;
 
 const interactiveControl = new InteractiveControl({
-  onRevoke: () => controller.revoke(),
-  onReconnect: () => {
-    if (activeSocket && activeSocket.readyState === WebSocket.OPEN) {
-      console.log("Already connected.");
-      return;
-    }
-    controller.reconnect();
-  },
+  onRevoke: () => bridge.revoke(),
+  onReconnect: () => bridge.reconnect(),
   onStatus: () => printStatus(),
   onAudit: () => void printAudit(),
   onQuit: () => shutdown(),
   onHelp: () => printHelp(),
 });
 
-approvalResolver =
-  APPROVAL_MODE === "interactive"
-    ? interactiveControl
-    : new AutoApprovalResolver(APPROVAL_MODE === "auto-allow");
+const approvalResolver: ApprovalResolver =
+  APPROVAL_MODE === "interactive" ? interactiveControl : new AutoApprovalResolver(APPROVAL_MODE === "auto-allow");
+
+const runtime: BridgeRuntimeOptions = {
+  nodeId: NODE_ID,
+  agents: [new DemoAgentAdapter()],
+  workspaces,
+  policy: new LocalPolicyEngine(workspaces),
+  audit: new CompositeAuditSink([new ConsoleAuditSink(), new FileAuditSink(AUDIT_FILE)]),
+};
+
+bridge = new Bridge({
+  serverUrl: SERVER_URL,
+  deviceToken: DEV_BRIDGE_TOKEN,
+  runtime,
+  approvals: approvalResolver,
+  log: (message) => console.log(message),
+});
 
 function printHelp(): void {
   console.log(
@@ -432,11 +226,10 @@ function printHelp(): void {
 }
 
 function printStatus(): void {
-  const connected = Boolean(activeSocket && activeSocket.readyState === WebSocket.OPEN);
   console.log(
     [
       "Bridge status:",
-      `  connection:   ${connected ? "online" : "offline"}${controller.isRevoked() ? " (revoked)" : ""}`,
+      `  connection:   ${bridge.isConnected() ? "online" : "offline"}${bridge.isRevoked() ? " (revoked)" : ""}`,
       `  server:       ${SERVER_URL}`,
       `  nodeId:       ${NODE_ID}`,
       `  agents:       ${runtime.agents.map((agent) => agent.descriptor.id).join(", ")}`,
@@ -465,8 +258,7 @@ async function printAudit(): Promise<void> {
 
 function shutdown(): void {
   console.log("Shutting down local bridge.");
-  controller.revoke();
-  activeSocket?.close();
+  bridge.revoke();
   process.exit(0);
 }
 
@@ -476,4 +268,4 @@ const localInput = createInterface({ input: process.stdin, terminal: false });
 localInput.on("line", (line) => interactiveControl.handleLine(line));
 
 printHelp();
-connect();
+bridge.connect();

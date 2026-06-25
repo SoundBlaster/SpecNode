@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { appendFile, mkdir, readFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { ApprovalRequest, AuditSink, RunEvent } from "./index.js";
@@ -259,4 +260,16 @@ export async function tailAuditLog(filePath: string, count: number): Promise<rea
     }
     throw error;
   }
+}
+
+/** Build an approval request, assigning a fresh approval id. */
+export function createApprovalRequest(
+  sessionId: string,
+  input: Omit<ApprovalRequest, "sessionId" | "approvalId">,
+): ApprovalRequest {
+  return {
+    sessionId,
+    approvalId: randomUUID(),
+    ...input,
+  };
 }
