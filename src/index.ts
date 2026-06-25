@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 export type RiskLevel = "low" | "medium" | "high";
 
 export type FilesystemPolicy = "none" | "workspace-read" | "workspace-write";
@@ -130,4 +132,25 @@ export function createNodeHello(options: BridgeRuntimeOptions): NodeHelloPayload
     agents: options.agents.map((adapter) => adapter.descriptor),
     workspaces: options.workspaces,
   };
+}
+
+/** Wrap a typed payload in a transport envelope. */
+export function createEnvelope<TPayload>(type: string, payload: TPayload): Envelope<TPayload> {
+  return {
+    id: randomUUID(),
+    type,
+    timestamp: new Date().toISOString(),
+    payload,
+  };
+}
+
+/** Parse and validate a transport envelope from its JSON wire form. */
+export function parseEnvelope(raw: string): Envelope<unknown> {
+  const value = JSON.parse(raw) as Partial<Envelope<unknown>>;
+
+  if (!value.id || !value.type || !value.timestamp || value.payload === undefined) {
+    throw new Error("Invalid envelope");
+  }
+
+  return value as Envelope<unknown>;
 }
